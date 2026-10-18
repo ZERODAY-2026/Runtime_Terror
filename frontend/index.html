@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DataMind — Talk to Your Data</title>
+  
+  <!-- Modern Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Editorial Brutalist 4-Column Grid -->
+  <main class="editorial-grid">
+    
+    <!-- ROW 1: Navigation Bar -->
+    <div class="grid-cell cell-logo">
+      <div class="brand-wrapper">
+        <a href="#" class="brand-logo-text dynamic-name">DATAMIND</a>
+        <span class="name-badge-pill">PS1 TRACK</span>
+      </div>
+    </div>
+
+    <div class="grid-cell">
+      <button id="btnAbilities" class="nav-link-btn" type="button">
+        ABILITIES
+      </button>
+    </div>
+
+    <div class="grid-cell">
+      <button id="btnHowItWorks" class="nav-link-btn" type="button">
+        HOW IT WORKS
+      </button>
+    </div>
+
+    <div class="grid-cell">
+      <button id="btnStayConnected" class="nav-link-btn right-align" type="button">
+        STAY CONNECTED
+      </button>
+    </div>
+
+    <!-- ROW 2: Helical Animation & Metadata -->
+    <div class="grid-cell cell-tagline">
+      <div class="vertical-tagline">
+        INTELLIGENCE<br>
+        POWERED BY DATA
+      </div>
+    </div>
+
+    <div class="grid-cell cell-helix">
+      <div class="helix-container">
+        <!-- 3D Rotating Helical Ring with Trailing Orange Pulse -->
+        <canvas id="helixCanvas"></canvas>
+      </div>
+    </div>
+
+    <div class="grid-cell cell-mid-spacer">
+      <!-- Minimalist grid spacer -->
+    </div>
+
+    <div class="grid-cell cell-scroll-indicator">
+      <button id="btnScrollDown" class="scroll-indicator-btn" type="button">
+        SCROLL DOWN
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <polyline points="19 12 12 19 5 12"></polyline>
+        </svg>
+      </button>
+    </div>
+
+    <!-- ROW 3: Hero Title & Editorial Mission -->
+    <div class="grid-cell cell-hero-title">
+      <h1 class="hero-main-title">
+        Meet <span class="dynamic-name">DataMind</span>
+      </h1>
+    </div>
+
+    <div class="grid-cell cell-hero-desc">
+      <p id="editorialDescText" class="hero-editorial-p">
+        <strong>DataMind</strong> redefines data workflows, empowering you to query in natural language, verify every calculation, and extract insights faster—unlocking your <span class="highlight-orange">revenue potential</span>.
+      </p>
+    </div>
+
+  </main>
+
+  <!-- Interactive Query Studio Section -->
+  <section id="queryStudioSection" class="section-query-studio">
+    <div class="section-header">
+      <span class="section-tag">Interactive Data Experience</span>
+      <h2 class="section-title">Ask your database in everyday language</h2>
+    </div>
+
+    <div class="query-box-container">
+      <div class="query-input-wrapper">
+        <input 
+          id="queryInput" 
+          type="text" 
+          class="query-input" 
+          placeholder="e.g. What was total revenue in 1995?"
+          value="What was total revenue in 1995?"
+        >
+        <button id="askBtn" class="ask-btn" type="button">
+          Ask <span class="dynamic-name">DataMind</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+            <polyline points="12 5 19 12 12 19"></polyline>
+          </svg>
+        </button>
+      </div>
+
+      <div class="sample-queries">
+        <span class="sample-label">Try asking:</span>
+        <button class="sample-chip" type="button">What was total revenue in 1995?</button>
+        <button class="sample-chip" type="button">Who are the top 3 customers by revenue?</button>
+        <button class="sample-chip" type="button">What is the average order discount in 1994?</button>
+      </div>
+
+      <!-- Live Verified Result Card -->
+      <div id="queryResultBox" class="query-result-box">
+        <div class="result-answer-header">
+          <span class="status-badge">
+            <span class="status-dot"></span>
+            Verified & Grounded
+          </span>
+          <span id="resultQueryId" class="code-pill">Snowflake Query ID: 01b7f8c2-0001-382a-0003-889a0004e12a</span>
+        </div>
+
+        <p id="resultAnswer" class="result-plain-text">
+          In 1995, the total net revenue across all shipped line items was $38,421,940.85.
+        </p>
+
+        <div class="evidence-grid">
+          <div class="evidence-block">
+            <div class="evidence-title">Generated SQL (Checked by AST Validator)</div>
+            <pre id="resultSql" class="sql-code-block">SELECT
+  SUM(l_extendedprice * (1 - l_discount)) AS total_revenue
+FROM lineitem
+WHERE l_shipdate >= '1995-01-01'
+  AND l_shipdate < '1996-01-01';</pre>
+          </div>
+
+          <div class="evidence-block">
+            <div class="evidence-title">Snowflake Result Rows</div>
+            <table id="resultTable" class="data-table">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th>Year</th>
+                  <th>Net Revenue (USD)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Total Revenue</td>
+                  <td>1995</td>
+                  <td>$38,421,940.85</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Floating Brand Name Switcher -->
+  <div class="brand-selector-panel">
+    <span class="brand-selector-label">Name Switcher:</span>
+    <div class="name-chips">
+      <button class="name-chip active" data-name="DataMind" type="button">DataMind</button>
+      <button class="name-chip" data-name="Axiom" type="button">Axiom</button>
+      <button class="name-chip" data-name="Vera" type="button">Vera</button>
+      <button class="name-chip" data-name="Klaro" type="button">Klaro</button>
+      <button class="name-chip" data-name="Synapse" type="button">Synapse</button>
+    </div>
+    <input 
+      id="customNameInput" 
+      type="text" 
+      class="name-custom-input" 
+      placeholder="Type name..." 
+      title="Type your own name and press enter"
+    >
+  </div>
+
+  <!-- Drawer: Abilities -->
+  <aside id="drawerAbilities" class="slide-drawer">
+    <div class="drawer-header">
+      <h3 class="drawer-title">Core Abilities</h3>
+      <button class="close-btn" type="button" aria-label="Close">✕</button>
+    </div>
+    <div class="drawer-body">
+      <div class="feature-card">
+        <h4><span style="color:var(--accent-orange)">01.</span> Natural Language to Verified SQL</h4>
+        <p>Google Gemma translates plain English into precise SQL queries mapped to your data catalog without hallucinating fake schema.</p>
+      </div>
+
+      <div class="feature-card">
+        <h4><span style="color:var(--accent-orange)">02.</span> Two-Layer Read-Only Defense</h4>
+        <p>A deterministic AST validator (<span class="code-pill">sqlglot</span>) rejects writes, mutations, and unknown tables before execution. Snowflake enforces strict read-only roles.</p>
+      </div>
+
+      <div class="feature-card">
+        <h4><span style="color:var(--accent-orange)">03.</span> Complete Audit Evidence</h4>
+        <p>Every answer exposes its complete reasoning trail: the exact SQL, Snowflake query ID, and raw returned dataset rows.</p>
+      </div>
+
+      <div class="feature-card">
+        <h4><span style="color:var(--accent-orange)">04.</span> Dynamic Grounding</h4>
+        <p>Unlike standard LLMs that generate plausible guesses, our agent recomputes directly from the live database and automatically reflects updated records.</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Drawer: How It Works -->
+  <aside id="drawerHowItWorks" class="slide-drawer">
+    <div class="drawer-header">
+      <h3 class="drawer-title">Architecture Pipeline</h3>
+      <button class="close-btn" type="button" aria-label="Close">✕</button>
+    </div>
+    <div class="drawer-body">
+      <div class="feature-card">
+        <h4>Pipeline Flow</h4>
+        <pre class="sql-code-block" style="margin-top:0.8rem">User Question
+     ↓
+Gemma LLM (Drafts structured SQL)
+     ↓
+AST Validator (Blocks DDL/DML, checks tables)
+     ↓
+Snowflake Execution (Read-only role, strict timeout)
+     ↓
+Answer Synthesis + Grounded Evidence Display</pre>
+      </div>
+
+      <div class="feature-card">
+        <h4>Why We Show Our Work</h4>
+        <p>Judges and users need trust. By displaying the generated query, query identifier, and exact data table, non-technical stakeholders can verify answers with absolute certainty.</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Drawer: Stay Connected -->
+  <aside id="drawerStayConnected" class="slide-drawer">
+    <div class="drawer-header">
+      <h3 class="drawer-title">Stay Connected</h3>
+      <button class="close-btn" type="button" aria-label="Close">✕</button>
+    </div>
+    <div class="drawer-body">
+      <div class="feature-card">
+        <h4>Runtime Terror Team</h4>
+        <p>Built for the Hackathon Track 1 (PS1: DataMind: Talk to Your Data).</p>
+      </div>
+      <div class="feature-card">
+        <h4>Repository</h4>
+        <p>GitHub: <a href="https://github.com/ZERODAY-2026/Runtime_Terror" target="_blank" style="color:var(--accent-orange); font-weight:600">ZERODAY-2026/Runtime_Terror</a></p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Drawer Backdrop -->
+  <div id="drawerBackdrop" class="drawer-backdrop"></div>
+
+  <!-- Scripts -->
+  <script src="helix.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
