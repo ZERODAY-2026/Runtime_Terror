@@ -1,22 +1,28 @@
-"""Command line: datamind check | smoke | ask | eval."""
+"""Command line: datamind check | smoke | ask | eval | statuses | ui."""
 
 from __future__ import annotations
 
 import argparse
 import html
 import json
+import os
 import sys
 
 import yaml
 
 from datamind.config import ConfigError, datasets_dir, load_dataset
 from datamind.config.models import DatasetConfig
-from datamind.model.adapter import ModelError, OllamaAdapter, ScriptedAdapter
+from datamind.model.adapter import ModelError, ScriptedAdapter, build_adapter
 from datamind.pipeline.run import Pipeline
 from datamind.pipeline.validator import Catalog, validate
 from datamind.response import Response
 from datamind.settings import get_settings
-from datamind.snowflake_io.executor import ExecutionError, LocalExecutor, SnowflakeExecutor
+from datamind.snowflake_io.executor import (
+    BackendUnavailable,
+    ExecutionError,
+    LocalExecutor,
+    SnowflakeExecutor,
+)
 
 
 def prompt_question(prompt: str) -> str:
@@ -46,7 +52,9 @@ def example_responder(cfg: DatasetConfig, extra: dict[str, str] | None = None):
 
 
 def _catalog(cfg: DatasetConfig) -> Catalog:
-    return Catalog(cfg.catalog(), cfg.snowflake.database, cfg.snowflake.schema_)
+    return Catalog(
+        cfg.catalog(), cfg.snowflake.database, cfg.snowflake.schema_, joins=cfg.join_pairs()
+    )
 
 
 def cmd_check(args) -> int:
@@ -96,7 +104,7 @@ def cmd_smoke(args) -> int:
         print("FAIL snowflake:", e)
         status = 1
     try:
-        print("ok   model:", OllamaAdapter(settings.model).ping())
+        print("ok   model:", build_adapter(settings.model).ping())
     except ModelError as e:
         print("FAIL model:", e)
         status = 1
@@ -148,7 +156,10 @@ def _build(args, settings, cfg, phrase_answers: bool = True) -> Pipeline:
     if provider == "scripted":
         model = ScriptedAdapter(example_responder(cfg))
     else:
-        model = OllamaAdapter(settings.model)
+        if provider != settings.model.provider:  # --model overrides .env: use its defaults
+            os.environ["DATAMIND_MODEL_PROVIDER"] = provider
+            settings.model = get_settings().model
+        model = build_adapter(settings.model)
     if backend == "local":
         from datamind.snowflake_io.fixture import build_fixture
 
@@ -186,16 +197,70 @@ def cmd_eval(args) -> int:
 
         def show(r):
             mark = "PASS" if r.passed else "FAIL"
-            print(f"{mark} {r.id:6} {r.status:11} {r.seconds:6.1f}s  {r.detail}", flush=True)
+            trust = f"  [{r.trust_detail}]" if r.trust_detail else ""
+            print(f"{mark} {r.id:6} {r.status:11} {r.seconds:6.1f}s  {r.detail}{trust}", flush=True)
 
-        report = run_eval(pipeline, golden, groups, progress=show)
+        report = run_eval(pipeline, golden, groups, progress=show, workers=args.workers)
         for g, (p, n) in report.by_group().items():
             print(f"     {g}: {p}/{n} ({p / n:.0%})")
         ok, summary = report.gate()
         print(f"Gate {'PASSED' if ok else 'FAILED'}: {summary}")
+        trust_ok, trust_summary = report.trust()
+        print(f"Trust {'PASSED' if trust_ok else 'FAILED'}: {trust_summary}")
+        if args.trust:
+            ok = ok and trust_ok
         print(f"Report: {report.save(evaluation_dir() / 'reports')}")
         status |= 0 if ok else 1
     return status
+
+
+STATUS_DEMO = [
+    ("ANSWERED", "What was total revenue in 1995?"),
+    ("CLARIFY", "Which products are doing best?"),
+    ("NO_DATA", "Show sales for Atlantis."),
+    ("UNSUPPORTED", "What will revenue be next year?"),
+    ("BLOCKED", "Delete all orders from 1994."),
+    ("ERROR", "What was total revenue in 1995?"),
+]
+
+
+class _Outage:
+    """Executor that behaves like Snowflake being down, to demonstrate ERROR."""
+
+    backend = "simulated-outage"
+
+    def run(self, *a, **k):
+        raise BackendUnavailable("Could not connect to Snowflake (simulated outage).")
+
+
+def cmd_ui(args) -> int:
+    """Start the Streamlit app (needs the ui extra: pip install -e ".[ui]")."""
+    import subprocess
+    from pathlib import Path
+
+    app = Path(__file__).parent / "ui" / "app.py"
+    return subprocess.call([sys.executable, "-m", "streamlit", "run", str(app)])
+
+
+def cmd_statuses(args) -> int:
+    """Show one example of every response status (PRD 8.2, phase 2 gate)."""
+    settings = get_settings()
+    cfg = load_dataset(args.dataset or settings.dataset)
+    pipeline = _build(args, settings, cfg)
+    failures = 0
+    for expected, question in STATUS_DEMO:
+        p = pipeline
+        if expected == "ERROR":
+            p = Pipeline(cfg, pipeline.model, _Outage(), max_rows=settings.max_rows)
+            question += "  [Snowflake outage simulated]"
+        resp = p.ask(question.split("  [")[0])
+        ok = resp.status.value == expected
+        failures += not ok
+        shown = resp.answer or resp.reason or (resp.clarification and resp.clarification.question)
+        print(f"{'ok  ' if ok else 'FAIL'} {expected:11} got {resp.status.value:11} {question}")
+        print(f"     {shown}")
+    print("every status demonstrated" if not failures else f"{failures} status(es) not shown")
+    return 1 if failures else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -214,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("question")
     a.add_argument("--dataset")
     a.add_argument("--backend", choices=["snowflake", "local"])
-    a.add_argument("--model", choices=["ollama", "scripted"])
+    a.add_argument("--model", choices=["ollama", "google", "scripted"])
     a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_ask)
 
@@ -223,11 +288,29 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--split", choices=["golden", "heldout", "all"], default="golden")
     e.add_argument("--groups", help="comma-separated groups, for example T1,T2,T7")
     e.add_argument("--backend", choices=["snowflake", "local"])
-    e.add_argument("--model", choices=["ollama", "scripted"])
+    e.add_argument("--model", choices=["ollama", "google", "scripted"])
     e.add_argument(
         "--phrase", action="store_true", help="also phrase answers with the model (slower)"
     )
+    e.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="questions run in parallel (useful with --model google)",
+    )
+    e.add_argument(
+        "--trust", action="store_true", help="also require the phase 2 trust gate to pass"
+    )
     e.set_defaults(func=cmd_eval)
+
+    st = sub.add_parser("statuses", help="show one example of every response status")
+    st.add_argument("--dataset")
+    st.add_argument("--backend", choices=["snowflake", "local"])
+    st.add_argument("--model", choices=["ollama", "google", "scripted"])
+    st.set_defaults(func=cmd_statuses)
+
+    u = sub.add_parser("ui", help="start the Streamlit interface")
+    u.set_defaults(func=cmd_ui)
 
     args = p.parse_args(argv)
     return args.func(args)
