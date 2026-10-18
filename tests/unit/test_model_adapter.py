@@ -115,7 +115,7 @@ def test_google_adapter_retries_busy_then_falls_back():
         return httpx.Response(200, json=_reply('{"sql": "SELECT 2"}'))
 
     assert _google(handler).generate("p", SqlDraft, prompt_version="v1").sql == "SELECT 2"
-    assert sum("gemma-a" in c for c in calls) == 3 and "gemma-b" in calls[-1]
+    assert sum("gemma-a" in c for c in calls) == 4 and "gemma-b" in calls[-1]
 
 
 def test_google_adapter_does_not_retry_a_bad_key():
@@ -152,5 +152,18 @@ def test_google_adapter_turns_thinking_off_by_default():
 
     _google(handler).generate("p", SqlDraft, prompt_version="v1")
     _google(handler, thinking=True).generate("p", SqlDraft, prompt_version="v1")
-    assert "Do not think" in bodies[0]["systemInstruction"]["parts"][0]["text"]
+    assert "Thinking is disabled" in bodies[0]["systemInstruction"]["parts"][0]["text"]
     assert "systemInstruction" not in bodies[1]
+
+
+def test_google_adapter_retries_a_hung_call():
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ReadTimeout("hung", request=request)
+        return httpx.Response(200, json=_reply('{"sql": "SELECT 3"}'))
+
+    assert _google(handler).generate("p", SqlDraft, prompt_version="v1").sql == "SELECT 3"
+    assert len(calls) == 2

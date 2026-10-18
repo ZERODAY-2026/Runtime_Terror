@@ -96,6 +96,14 @@ class SnowflakeExecutor:
             raise BackendUnavailable(
                 f"Could not connect to Snowflake: {type(e).__name__}: {e}"
             ) from e
+        try:
+            # Only the dataset's role may count: accounts can default users to
+            # DEFAULT_SECONDARY_ROLES = ('ALL'), which would add every other granted role.
+            self._conn.cursor().execute("USE SECONDARY ROLES NONE")
+        except Exception as e:
+            self._conn.close()
+            self._conn = None
+            raise BackendUnavailable(f"Could not drop secondary roles: {e}") from e
         return self._conn
 
     def run(self, sql: str, *, request_id: str, max_rows: int) -> QueryResult:
@@ -128,13 +136,14 @@ class SnowflakeExecutor:
         )
 
     def smoke(self) -> str:
+        table = next(iter(self.dataset.tables))
         r = self.run(
-            "SELECT CURRENT_ROLE(), CURRENT_WAREHOUSE(), COUNT(*) FROM REGION",
+            f"SELECT CURRENT_ROLE(), CURRENT_WAREHOUSE(), COUNT(*) FROM {table}",
             request_id="smoke",
             max_rows=1,
         )
-        role, wh, regions = r.rows[0]
-        return f"role={role} warehouse={wh} REGION rows={regions} query_id={r.query_id}"
+        role, wh, rows = r.rows[0]
+        return f"role={role} warehouse={wh} {table} rows={rows} query_id={r.query_id}"
 
 
 class LocalExecutor:
@@ -144,6 +153,10 @@ class LocalExecutor:
 
     def __init__(self, connection):
         self._conn = connection
+
+    @property
+    def connection(self):
+        return self._conn
 
     def run(self, sql: str, *, request_id: str, max_rows: int) -> QueryResult:
         started = time.perf_counter()

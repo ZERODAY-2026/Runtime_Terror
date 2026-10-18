@@ -17,8 +17,8 @@ the exact SQL that ran, the Snowflake query ID, the result rows, and a plain-lan
 Google Gemma understands the question and drafts SQL; ordinary code checks it; Snowflake runs it
 under a read-only role.
 
-> Status: **phase 2 (trust features)**. Answers carry query facts, a number check and full
-> evidence; every response status is demonstrable with `datamind statuses`.
+> Status: **phases 3 to 5 built**. Two datasets (TPC-H and Our World in Data), a full golden
+> set with PRD section 3 targets, a data-change test and a role demo. See [Build status](#build-status).
 
 ## How a question is answered
 
@@ -106,7 +106,15 @@ Each answer card shows the status, the answer, assumption chips and a plain-lang
 explanation, with a collapsed **Evidence** section: the question as understood, the exact SQL,
 the Snowflake query ID, run details, the first 50 rows, the query facts read from the SQL,
 tables and columns used, the data's date coverage, the model and prompt versions, the answer
-check result and any limits. Evidence downloads as JSON.
+check result and any limits.
+
+The page also draws what fits the result, using only the rows shown as evidence: one number
+becomes a KPI card, a date or year with a number becomes a line chart, and up to 15 labelled
+numbers become a bar chart. Snowflake answers show the query ID with a copy button and a link to
+that query in Snowsight. Answers end with follow-up buttons built from the question (the year
+before, the same by year, the top 5), and the evidence offers the shown rows as CSV and a proof
+bundle as JSON (question, SQL, query facts, query ID, role, warehouse, times; no keys or
+settings).
 
 Offline (no Snowflake, no model), using a tiny synthetic fixture and a scripted stub that only
 knows the questions in `datasets/tpch_sf1/examples.yaml`:
@@ -146,13 +154,19 @@ tests/                  unit/, adversarial/, integration/
 | --- | --- | --- |
 | 0 Foundations | Skeleton, setup scripts, TPC-H config, model adapter, validator, golden set started, one question end to end | Done |
 | 1 Core pipeline | Classifier, SQL drafting with Gemma, repair loop, answer writer | Done: gate passed on Snowflake (T1 88%, T2 88%, T7 10/10) |
-| 2 Trust features | Query facts, number verifier, evidence panel, edge-case statuses | Gate passed on the offline fixture with hosted Gemma (faithfulness 100%, evidence 100%, every status shown); Snowflake run pending |
-| 3 Evaluation and hardening | Full golden set, runner, model benchmark | Not started |
-| 4 Reuse and polish | OWID dataset, dataset selector, role demo, UI | Not started |
-| 5 Docs and demo | Architecture, model setup, limitations, demo | Not started |
+| 2 Trust features | Query facts, number verifier, evidence panel, edge-case statuses | Done: gate passed on Snowflake (faithfulness 100%, evidence 100%, every status shown) |
+| 3 Evaluation and hardening | Full golden set, runner, model benchmark | Done on Snowflake: golden 45/45, held-out 19/19, data change 3/3; every target met except latency (see [evaluation](docs/evaluation.md#latest-results)) |
+| 4 Reuse and polish | OWID dataset, dataset selector, role demo, UI | Done: OWID loaded on Snowflake (7 tables), golden 10/11 and held-out 3/3; restricted-role fix to re-run |
+| 5 Docs and demo | Architecture, model setup, limitations, demo | Done: docs written (see Documentation) |
 
 ## Documentation
 
+- [Architecture](docs/architecture.md): pipeline steps, statuses, write barriers, what the model sees
+- [Model setup](docs/model-setup.md): hosted and local Gemma, licence, speed, smoke test, benchmark
+- [Dataset onboarding](docs/dataset-onboarding.md): adding a dataset with configuration only
+- [Evaluation](docs/evaluation.md): test sets, scoring rules, gates, commands, latest results
+- [Limitations](docs/limitations.md): what DataMind does not do
+- [Demo script](docs/demo-script.md): the ten demo steps and what to do if the network fails
 - [Product Requirements Document (PRD)](./DataMind%20Product%20Requirements%20Document%20(PRD).md)
 - [Tech Stack and Engineering Guide](./DataMind%20Tech%20Stack%20and%20Engineering%20Guide.md)
 

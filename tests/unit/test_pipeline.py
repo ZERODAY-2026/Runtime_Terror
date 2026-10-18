@@ -44,7 +44,7 @@ class Exploding:
     backend = "should-not-run"
 
     def run(self, sql, *, request_id, max_rows):
-        if request_id == "time-anchor":  # the read-only MAX(date) lookup is allowed
+        if request_id in ("time-anchor", "access-check"):  # fixed read-only lookups
             raise ExecutionError("no data")
         raise AssertionError("blocked SQL reached the executor")
 
@@ -58,7 +58,7 @@ def test_answers_with_evidence(tpch, fixture_db):
     assert ev.rows_returned == 1 and ev.columns == ["revenue"]
     assert ev.tables == ["LINEITEM", "ORDERS"]
     assert "LIMIT 100" in ev.sql
-    assert ev.prompt_versions == ["understand_v3", "draft_sql_v2", "answer_v2"]
+    assert ev.prompt_versions == ["understand_v4", "draft_sql_v2", "answer_v2"]
     assert ev.data_latest_date.startswith("1998")
     assert resp.assumptions == ["assumed", "Dates used: 1994-01-01 to 1994-12-31 (O_ORDERDATE)."]
     assert "1994-01-01 to 1994-12-31" in resp.explanation
@@ -238,6 +238,19 @@ def test_empty_filter_explains_the_missing_value(tpch, fixture_db):
     assert resp.suggestions and "Atlantis" not in resp.suggestions[0]
 
 
+def test_filter_value_in_the_wrong_case_is_matched(tpch, fixture_db):
+    resp = run(
+        tpch,
+        fixture_db,
+        "SELECT C_NAME FROM CUSTOMER JOIN NATION ON C_NATIONKEY = N_NATIONKEY "
+        "WHERE N_NAME = 'Germany'",
+        "Show customers in Germany",
+    )
+    assert resp.status is Status.ANSWERED
+    assert "'GERMANY'" in resp.evidence.sql
+    assert any("stored value 'GERMANY'" in a for a in resp.assumptions)
+
+
 def test_empty_date_range_reports_coverage(tpch, fixture_db):
     resp = run(
         tpch,
@@ -312,3 +325,48 @@ def test_total_over_no_rows_is_no_data(tpch, fixture_db):
     )
     assert resp.status is Status.NO_DATA
     assert "ATLANTIS" in resp.reason
+
+
+def test_tables_the_role_cannot_see_are_hidden(tpch):
+    """US-14: a restricted role sees fewer tables; they leave the schema and the allow-list."""
+    from datamind.snowflake_io.executor import QueryResult
+
+    class Restricted:
+        backend = "fake"
+
+        def run(self, sql, *, request_id, max_rows):
+            assert request_id == "access-check"
+            rows = [("NATION",), ("REGION",)]
+            return QueryResult(["TABLE_NAME"], rows, "q1", 0.0, "now", "fake")
+
+    pipe = Pipeline(tpch, ScriptedAdapter(lambda p, v: {}), Restricted())
+    assert "CUSTOMER" in pipe.check_access()
+    assert set(pipe.dataset.tables) == {"NATION", "REGION"}
+    assert set(pipe.catalog.tables) == {"NATION", "REGION"}
+
+
+def test_question_about_hidden_data_is_refused_before_drafting():
+    """EC-10: asking about a hidden table gets no-access, never a swapped metric."""
+    from datamind.config.loader import load_dataset
+    from datamind.snowflake_io.executor import QueryResult
+
+    cfg = load_dataset("owid_restricted")
+
+    class Restricted:
+        backend = "fake"
+
+        def run(self, sql, *, request_id, max_rows):
+            if request_id == "access-check":
+                rows = [("COUNTRY",), ("LIFE_EXPECTANCY",)]
+                return QueryResult(["TABLE_NAME"], rows, "q1", 0.0, "now", "fake")
+            return QueryResult(["Y"], [(1990, 2023)], "q2", 0.0, "now", "fake")
+
+    def never(prompt, version):
+        raise AssertionError("the model must not be asked")
+
+    pipe = Pipeline(cfg, ScriptedAdapter(never), Restricted())
+    resp = pipe.ask("What was GDP per capita in India in 2015?")
+    assert resp.status is Status.UNSUPPORTED
+    assert "GDP_PER_CAPITA" in resp.reason
+    assert "gdp_per_capita" not in pipe.dataset.metrics
+    assert "life expectancy" not in pipe.hidden_terms

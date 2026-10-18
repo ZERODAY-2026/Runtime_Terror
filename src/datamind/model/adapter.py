@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import time
 from collections.abc import Callable
 from typing import Protocol, TypeVar
@@ -107,7 +108,10 @@ class OllamaAdapter:
         return f"{self.settings.name} available at {self.settings.endpoint}"
 
 
-NO_THINKING = "Answer immediately. Do not think or reason before answering; output only the JSON."
+NO_THINKING = (
+    "You are a JSON formatter. Respond with the final JSON at once. Thinking is disabled: "
+    "never write a thought, plan or reasoning step."
+)
 
 
 class GoogleAIAdapter:
@@ -118,7 +122,7 @@ class GoogleAIAdapter:
     Busy (429/503) replies are retried with backoff, then the fallback models are tried.
     """
 
-    RETRY_STATUS = {429, 500, 503}
+    RETRY_STATUS = {429, 500, 503, 504}  # 504: a hung call, also retried
 
     def __init__(self, settings: ModelSettings, client: httpx.Client | None = None):
         if not settings.api_key.get_secret_value():
@@ -126,8 +130,13 @@ class GoogleAIAdapter:
         self.settings = settings
         self.name = settings.name
         self._models = [settings.name, *settings.fallback_models]
-        self._client = client or httpx.Client(timeout=settings.timeout_seconds)
+        # A normal hosted call takes a few seconds; a hung one is retried rather than waited on.
+        timeout = (
+            settings.timeout_seconds if settings.thinking else min(settings.timeout_seconds, 60.0)
+        )
+        self._client = client or httpx.Client(timeout=timeout)
         self.backoff_seconds = 2.0
+        self.attempts = 4  # per model: waits of about 2, 4, 8 and 16 seconds
 
     def _headers(self) -> dict:
         return {"x-goog-api-key": self.settings.api_key.get_secret_value()}
@@ -153,13 +162,15 @@ class GoogleAIAdapter:
         url = f"{self.settings.endpoint.rstrip('/')}/models/{model}:generateContent"
         try:
             return self._client.post(url, json=payload, headers=self._headers())
+        except httpx.TimeoutException:
+            return httpx.Response(504, json={"error": {"message": "timed out"}})  # retried
         except httpx.HTTPError as e:
             raise ModelError(f"The model endpoint could not be reached: {type(e).__name__}") from e
 
     def _chat(self, messages: list[dict]) -> str:
         last = ""
         for model in self._models:
-            for attempt in range(3):
+            for attempt in range(self.attempts):
                 resp = self._call(model, messages)
                 if resp.status_code == 200:
                     if model != self.name:
@@ -168,7 +179,8 @@ class GoogleAIAdapter:
                 last = f"{resp.status_code} {_error_message(resp)}"
                 if resp.status_code not in self.RETRY_STATUS:
                     raise ModelError(f"The model endpoint refused the request: {last}")
-                time.sleep(self.backoff_seconds * (2**attempt))
+                # Spread retries out so parallel callers do not hit the API in step.
+                time.sleep(self.backoff_seconds * (2**attempt) * random.uniform(1.0, 1.5))
         raise ModelError(f"The hosted model is busy: {last}")
 
     def generate(self, prompt: str, schema: type[T], *, prompt_version: str) -> T:

@@ -14,6 +14,9 @@ import re
 import uuid
 from decimal import Decimal
 
+import sqlglot
+from sqlglot import exp
+
 from datamind.config.models import DatasetConfig
 from datamind.model.adapter import ModelAdapter, ModelError
 from datamind.model.prompts import (
@@ -97,6 +100,8 @@ class Pipeline:
         )
         self._latest_date: str | None = None
         self._coverage = ""
+        self.hidden_tables: list[str] | None = None  # set on the first question (US-14)
+        self.hidden_terms: list[str] = []  # words that name hidden data, such as "gdp per capita"
         self.date_columns = {
             f"{t}.{c}"
             for t, table in dataset.tables.items()
@@ -124,6 +129,62 @@ class Pipeline:
             first, last = (str(_cell(v)) for v in r.rows[0])
             self._latest_date = last
             self._coverage = f"{t.anchor_table}.{t.anchor_column} from {first} to {last}"
+
+    def check_access(self) -> list[str]:
+        """Drop configured tables the Snowflake role cannot see (US-14, FR-G4, EC-10).
+
+        INFORMATION_SCHEMA lists only what the current role may read. If the listing fails or
+        is empty (for example the offline fixture), nothing is hidden. Hidden tables leave the
+        schema Gemma sees and the validator's allow-list, so they cannot be queried or guessed.
+        """
+        if self.hidden_tables is not None:
+            return self.hidden_tables
+        self.hidden_tables = []
+        schema = self.dataset.snowflake.schema_.upper().replace("'", "")
+        try:
+            r = self.executor.run(
+                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+                f"WHERE UPPER(TABLE_SCHEMA) = '{schema}'",
+                request_id="access-check",
+                max_rows=10000,
+            )
+        except ExecutionError as e:
+            log.warning("could not list the tables this role can see: %s", e)
+            return self.hidden_tables
+        visible = {str(row[0]).upper() for row in r.rows}
+        if not visible:
+            return self.hidden_tables
+        self.hidden_tables = sorted(t for t in self.dataset.tables if t not in visible)
+        if self.hidden_tables:
+            log.info("tables hidden from role: %s", ", ".join(self.hidden_tables))
+            kept = {t: v for t, v in self.dataset.tables.items() if t in visible}
+            joins = [j for j in self.dataset.joins if {j.left_table, j.right_table} <= set(kept)]
+            metrics = {
+                k: m for k, m in self.dataset.metrics.items() if _metric_tables(m.sql) <= set(kept)
+            }
+            defaults = [d for d in self.dataset.defaults if not d.metric or d.metric in metrics]
+            self.hidden_terms = _hidden_terms(self.dataset, kept, metrics)
+            self.dataset = self.dataset.model_copy(
+                update={"tables": kept, "joins": joins, "metrics": metrics, "defaults": defaults}
+            )
+            self.catalog = Catalog(
+                tables=self.dataset.catalog(),
+                database=self.dataset.snowflake.database,
+                schema=self.dataset.snowflake.schema_,
+                joins=self.dataset.join_pairs(),
+            )
+        return self.hidden_tables
+
+    def _names_hidden(self, question: str) -> bool:
+        """Whether the question asks about data the role cannot see (answer it, never swap)."""
+        text = question.lower()
+        return any(re.search(rf"\b{re.escape(t)}\b", text) for t in self.hidden_terms)
+
+    def _no_access_reason(self, hidden: list[str]) -> str:
+        return (
+            f"Your Snowflake role ({self.dataset.snowflake.role}) has no access to "
+            f"{', '.join(hidden)}, so questions about them cannot be answered here."
+        )
 
     def latest_date(self) -> str:
         """Latest value of the configured time column; anchors relative dates (FR-A4)."""
@@ -234,6 +295,47 @@ class Pipeline:
     def _traces(answer: str, question: str, rows: list[list], n: int) -> bool:
         return not untraced_numbers(answer, [v for r in rows for v in r], question, [n, len(rows)])
 
+    def _fix_case(
+        self, sql: str, facts: QueryFacts, limit_added: bool, request_id: str
+    ) -> tuple[str, QueryFacts, QueryResult, str] | None:
+        """Rerun an empty query once when a filter value only differs from a stored one by case.
+
+        'AFRICA' for 'Africa', or 'India' for 'INDIA': the model cannot see the stored casing.
+        """
+        for f in facts.filters:
+            if f.op not in ("=", "IN") or f.column == facts.date_column:
+                continue
+            table, _, col = f.column.rpartition(".")
+            if table not in self.catalog.tables:
+                continue
+            for value in f.values:
+                if _exists(self, table, col, value, request_id):
+                    continue
+                stored = _same_but_case(self, table, col, value, request_id)
+                if not stored:
+                    continue
+                checked = validate(
+                    _replace_literal(sql, value, stored), self.catalog, max_rows=self.max_rows
+                )
+                if not checked.ok:
+                    return None
+                try:
+                    result = self.executor.run(
+                        checked.sql, request_id=request_id, max_rows=self.max_rows
+                    )
+                except ExecutionError:
+                    return None
+                if result.row_count == 0:
+                    return None
+                new_facts = extract_facts(checked.sql, self.catalog, self.date_columns, limit_added)
+                return (
+                    checked.sql,
+                    new_facts,
+                    result,
+                    f"Matched {value!r} to the stored value {stored!r}.",
+                )
+        return None
+
     def _diagnose_empty(
         self, facts: QueryFacts, question: str, request_id: str
     ) -> tuple[str, list[str]]:
@@ -334,6 +436,9 @@ class Pipeline:
             return done(Status.BLOCKED, reason=unsafe)
 
         # 3. Understand: rewrite follow-ups and classify (Gemma).
+        hidden = self.check_access()
+        if self._names_hidden(q):
+            return done(Status.UNSUPPORTED, reason=self._no_access_reason(hidden))
         history = conversation.history_text() if conversation else ""
         try:
             evidence.prompt_versions.append(UNDERSTAND)
@@ -350,6 +455,9 @@ class Pipeline:
         if u.used_context and conversation:
             last = conversation.turns[-1]
             evidence.context_used = f"Previous question: {last.standalone_question}"
+
+        if self._names_hidden(standalone):
+            return done(Status.UNSUPPORTED, reason=self._no_access_reason(hidden))
 
         # The rewritten question gets the same code guard as the original.
         unsafe = unsafe_reason(standalone)
@@ -377,11 +485,10 @@ class Pipeline:
             # No usable options: answer with the most common reading instead of asking badly.
         if u.category == "unsupported":
             suggestions = [u.alternative] if u.alternative else []
-            return done(
-                Status.UNSUPPORTED,
-                reason=u.reason or "The data cannot answer this question.",
-                suggestions=suggestions,
-            )
+            reason = u.reason or "The data cannot answer this question."
+            if hidden:  # EC-10: say what this role cannot see instead of guessing
+                reason += " " + self._no_access_reason(hidden)
+            return done(Status.UNSUPPORTED, reason=reason, suggestions=suggestions)
 
         # 4-7. Draft, validate, execute, repair.
         evidence.data_latest_date = self.latest_date()
@@ -413,6 +520,11 @@ class Pipeline:
             )
 
         facts = extract_facts(evidence.sql, self.catalog, self.date_columns, limit_added)
+        if result.row_count == 0:  # a filter value written in the wrong case: fix it once
+            fixed = self._fix_case(evidence.sql, facts, limit_added, request_id)
+            if fixed:
+                evidence.sql, facts, result, note = fixed
+                assumptions = [*assumptions, note]
         evidence.query_facts = facts.lines()
         evidence.columns_used = facts.columns_used
         evidence.role = str(result.meta.get("role") or "")
@@ -422,6 +534,11 @@ class Pipeline:
                 *assumptions,
                 f"Dates used: {facts.date_range[0]} to {facts.date_range[1]} "
                 f"({facts.date_column.split('.')[-1]}).",
+            ]
+        elif self.dataset.time and self.coverage() and not _time_filtered(facts, self):
+            assumptions = [
+                *assumptions,
+                f"No time period given: all dates in the data ({self.coverage()}).",
             ]
         evidence.query_id = result.query_id
         evidence.elapsed_seconds = result.elapsed_seconds
@@ -476,6 +593,30 @@ def _looks_english(text: str) -> bool:
     return not (words & foreign)
 
 
+def _metric_tables(sql: str) -> set[str]:
+    return {m.upper() for m in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\.", sql)}
+
+
+def _hidden_terms(cfg: DatasetConfig, kept: dict, metrics: dict) -> list[str]:
+    """Names and synonyms of hidden tables and metrics that no visible one also uses."""
+
+    def words(name: str) -> str:
+        return name.lower().replace("_", " ")
+
+    visible = {words(t) for t in kept} | {words(k) for k in metrics}
+    visible |= {s.lower() for m in metrics.values() for s in m.synonyms}
+    visible |= {s.lower() for t in kept.values() for c in t.columns.values() for s in c.synonyms}
+    terms = set()
+    for name, table in cfg.tables.items():
+        if name not in kept:
+            terms.add(words(name))
+            terms |= {s.lower() for c in table.columns.values() for s in c.synonyms}
+    for name, m in cfg.metrics.items():
+        if name not in metrics:
+            terms |= {words(name), *(s.lower() for s in m.synonyms)}
+    return sorted(t for t in terms if t and t not in visible)
+
+
 def _quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
@@ -488,6 +629,34 @@ def _exists(p: Pipeline, table: str, column: str, value: str, request_id: str) -
         return bool(p.executor.run(sql, request_id=request_id, max_rows=1).rows)
     except ExecutionError:
         return True  # unknown, so do not blame this filter
+
+
+def _same_but_case(p: Pipeline, table: str, column: str, value: str, request_id: str) -> str:
+    """The one stored value equal to value ignoring case, or "" when there is none or several."""
+    sql = (
+        f"SELECT DISTINCT {column} FROM {table} "
+        f"WHERE UPPER({column}) = UPPER({_quote(value)}) LIMIT 2"
+    )
+    if not validate(sql, p.catalog).ok:
+        return ""
+    try:
+        rows = p.executor.run(sql, request_id=request_id, max_rows=2).rows
+    except ExecutionError:
+        return ""
+    return str(rows[0][0]) if len(rows) == 1 and rows[0][0] is not None else ""
+
+
+def _replace_literal(sql: str, old: str, new: str) -> str:
+    """The SQL with every string literal equal to old replaced by new."""
+    tree = sqlglot.parse_one(sql, read="snowflake")
+    tree = tree.transform(
+        lambda n: (
+            exp.Literal.string(new)
+            if isinstance(n, exp.Literal) and n.is_string and n.this == old
+            else n
+        )
+    )
+    return tree.sql(dialect="snowflake")
 
 
 def _top_values(p: Pipeline, table: str, column: str, request_id: str) -> list[str]:
@@ -505,3 +674,15 @@ def _swap(question: str, old: str, new: str) -> str:
     """The question with the missing value replaced, when the value appears in it."""
     pattern = re.compile(re.escape(old), re.IGNORECASE)
     return pattern.sub(new, question, count=1) if pattern.search(question) else ""
+
+
+def _time_filtered(facts: QueryFacts, pipe: Pipeline) -> bool:
+    """Whether the query limits time at all: a date column, or any column named like the anchor."""
+    anchor = pipe.dataset.time.anchor_column.upper() if pipe.dataset.time else ""
+    names = [f.column for f in facts.filters]
+    if any(n in pipe.date_columns or n.split(".")[-1] == anchor for n in names):
+        return True
+    text = " ".join(facts.other_conditions + facts.group_by).upper()
+    return bool(anchor and anchor in text) or any(
+        c.split(".")[-1] in text for c in pipe.date_columns
+    )
