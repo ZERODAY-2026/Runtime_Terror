@@ -10,7 +10,7 @@
 
 ---
 
-# DataMind
+ # DataMind
 
 Ask questions about your Snowflake data in everyday language and get answers that show their work:
 the exact SQL that ran, the Snowflake query ID, the result rows, and a plain-language explanation.
