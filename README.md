@@ -1,3 +1,15 @@
+# PS1 — DataMind: Talk to Your Data
+
+## Problem Statement
+
+**The challenge.** Organizations hold large amounts of information in databases, spreadsheets, documents and other sources. Getting a useful answer often takes technical skills, specialised queries or hours of manual searching, so the people who understand the questions best are often the least able to reach the data.
+
+**Your mission.** Create an AI-powered data experience that lets people ask questions in everyday language and get useful answers grounded in the available data, with enough explanation that users trust the response reflects the information actually examined.
+
+**Keep in mind.** The goal is not fluent text. The system must meaningfully work with data (retrieve, query, analyse) and make its answers understandable and trustworthy. Think broadly about data types, industries and users: business intelligence, operations, research, education, finance and decision-making are all fair game. Unlike a chatbot that produces plausible text, a data agent computes answers from the real data, shows the query, rows or sources, flags gaps, and changes its answer when the data changes.
+
+---
+
 # DataMind
 
 Ask questions about your Snowflake data in everyday language and get answers that show their work:
@@ -50,3 +62,9 @@ openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out keys/datamind_app_rs
 openssl rsa -in keys/datamind_app_rsa_key.p8 -pubout -out keys/datamind_app_rsa_key.pub
 # In Snowflake: ALTER USER DATAMIND_APP SET RSA_PUBLIC_KEY = '<body of the .pub file>'
 ```
+
+## Documentation
+
+- [Product Requirements Document (PRD)](./DataMind%20Product%20Requirements%20Document%20(PRD).md)
+- [Tech Stack and Engineering Guide](./DataMind%20Tech%20Stack%20and%20Engineering%20Guide.md)
+
