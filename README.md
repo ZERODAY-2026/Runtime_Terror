@@ -60,11 +60,72 @@ Create a key pair for the application user and register the public key:
 mkdir -p keys
 openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out keys/datamind_app_rsa_key.p8 -nocrypt
 openssl rsa -in keys/datamind_app_rsa_key.p8 -pubout -out keys/datamind_app_rsa_key.pub
-# In Snowflake: ALTER USER DATAMIND_APP SET RSA_PUBLIC_KEY = '<body of the .pub file>'
+# In Snowflake: ALTER USER DATAMIND_APP SET RSA_PUBLIC_KEY = '<body of the .pub file>';
 ```
+
+### 2. Gemma
+
+```bash
+ollama pull gemma3:12b
+```
+
+Set `DATAMIND_MODEL_ENDPOINT` and `DATAMIND_MODEL_NAME` in `.env` to switch variants or point at
+a remote server. Accept the Gemma Terms of Use where you download the weights.
+
+### 3. Check and ask
+
+```bash
+datamind check                     # dataset config + golden SQL through the validator
+datamind smoke                     # Snowflake and model connections, reported separately
+datamind ask "What was total revenue in 1995?"
+```
+
+Offline (no Snowflake, no model), using a tiny synthetic fixture and a scripted stub that only
+knows the questions in `datasets/tpch_sf1/examples.yaml`:
+
+```bash
+datamind ask "What was total revenue in 1994?" --backend local --model scripted
+```
+
+## Tests
+
+```bash
+pytest -q                 # unit + adversarial, offline
+pytest -m integration     # live Snowflake and model, needs .env
+```
+
+## Repository layout
+
+```
+datasets/tpch_sf1/      dataset.yaml (tables, metrics, joins, defaults) and examples.yaml
+evaluation/golden/      golden questions with hand-written ground-truth SQL
+evaluation/heldout/     held-out questions, never used in prompts or tuning
+snowflake/              repeatable setup scripts
+src/datamind/
+  config/               dataset config models and loader
+  model/                Gemma adapter (Ollama), output schemas, versioned prompts
+  pipeline/             validator and question pipeline
+  snowflake_io/         Snowflake executor, offline DuckDB fixture
+  cli.py                datamind check | smoke | ask
+tests/                  unit/, adversarial/, integration/
+```
+
+## Build status
+
+| Phase | Scope | State |
+| --- | --- | --- |
+| 0 Foundations | Skeleton, setup scripts, TPC-H config, model adapter, validator, golden set started, one question end to end | Done offline; live Snowflake and Gemma pending credentials |
+| 1 Core pipeline | Classifier, SQL drafting with Gemma, repair loop, answer writer | Not started |
+| 2 Trust features | Query facts, number verifier, evidence panel, edge-case statuses | Not started |
+| 3 Evaluation and hardening | Full golden set, runner, model benchmark | Not started |
+| 4 Reuse and polish | OWID dataset, dataset selector, role demo, UI | Not started |
+| 5 Docs and demo | Architecture, model setup, limitations, demo | Not started |
 
 ## Documentation
 
 - [Product Requirements Document (PRD)](./DataMind%20Product%20Requirements%20Document%20(PRD).md)
 - [Tech Stack and Engineering Guide](./DataMind%20Tech%20Stack%20and%20Engineering%20Guide.md)
 
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). TPC-H is referenced, not copied. Gemma weights are not redistributed.
